@@ -27,7 +27,7 @@ A aplicação da metodologia consiste nos seguintes passos:
 - Python 3
 - MininetFed 2.0 instalado e funcional
 
-** Para instalar o MininetFed 2.0, siga as instruções em:**
+**Para instalar o MininetFed 2.0, siga as instruções em:**
 
 https://github.com/lprm-ufes/MininetFed-2.0-SBRC-2026
 
