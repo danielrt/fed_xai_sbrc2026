@@ -56,25 +56,50 @@ def class_counts(df: pd.DataFrame, label_col: str) -> Dict[int, int]:
 # Split IID (treino e teste separadamente)
 # ============================================================
 
-def split_iid_stratified(df: pd.DataFrame, n_clients: int, label_col: str, seed: int) -> List[pd.DataFrame]:
-    """
-    IID estratificado: mantém distribuição do label parecida em todos os clientes.
-    """
-    rng = np.random.default_rng(seed)
+def split_iid_stratified(df, n_clients, label_col, seed, verbose=False):
+    import numpy as np
+    import pandas as pd
+
     parts = [[] for _ in range(n_clients)]
 
-    classes = df[label_col].unique()
-    for c in classes:
-        df_c = df[df[label_col] == c].sample(frac=1.0, random_state=int(rng.integers(0, 10**9)))
-        splits = np.array_split(df_c, n_clients)
-        for i in range(n_clients):
-            parts[i].append(splits[i])
+    for label_value, group in df.groupby(label_col):
+        group = group.sample(frac=1.0, random_state=seed)
+        index_chunks = np.array_split(group.index.to_numpy(), n_clients)
 
-    out = []
-    for i in range(n_clients):
-        out_i = pd.concat(parts[i], axis=0).sample(frac=1.0, random_state=seed)
-        out.append(out_i)
-    return out
+        for client_idx, idx_chunk in enumerate(index_chunks):
+            if len(idx_chunk) == 0:
+                continue
+
+            chunk_df = df.loc[idx_chunk].copy()
+            if not chunk_df.empty:
+                parts[client_idx].append(chunk_df)
+
+        if verbose:
+            sizes = [len(idx_chunk) for idx_chunk in index_chunks]
+            print(f"[IID] classe={label_value} -> distribuição por cliente: {sizes}")
+
+    client_dfs = []
+    for client_idx in range(n_clients):
+        valid_parts = [
+            part for part in parts[client_idx]
+            if isinstance(part, pd.DataFrame) and not part.empty
+        ]
+
+        if not valid_parts:
+            raise RuntimeError(
+                f"Cliente {client_idx} ficou sem amostras no split IID. "
+                f"Tente reduzir n_clients ou revisar a distribuição das classes."
+            )
+
+        client_df = pd.concat(valid_parts, axis=0)
+        client_df = client_df.sample(frac=1.0, random_state=seed).reset_index(drop=True)
+
+        if verbose:
+            print(f"[IID] cliente {client_idx}: {len(client_df)} amostras")
+
+        client_dfs.append(client_df)
+
+    return client_dfs
 
 
 # ============================================================
@@ -103,7 +128,7 @@ def _dirichlet_initial_split_indices(
 
     if n_classes < 2:
         # tudo uma classe só: devolve divisão qualquer (ainda disjunta)
-        idx = df.index.to_numpy()
+        idx = np.array(df.index.to_numpy(), copy=True)
         rng.shuffle(idx)
         splits = np.array_split(idx, n_clients)
         client_idx = [list(map(int, s)) for s in splits]
@@ -119,7 +144,11 @@ def _dirichlet_initial_split_indices(
     # distribuição de classes por cliente (Dirichlet)
     class_props = rng.dirichlet(alpha=[alpha_class] * n_classes, size=n_clients)
 
-    idx_by_class = {int(c): df[df[label_col] == c].index.to_numpy() for c in classes}
+    # IMPORTANTE: copy=True para evitar "array is read-only"
+    idx_by_class = {
+        int(c): np.array(df[df[label_col] == c].index.to_numpy(), copy=True)
+        for c in classes
+    }
     for c in idx_by_class:
         rng.shuffle(idx_by_class[c])
 
@@ -146,8 +175,13 @@ def _dirichlet_initial_split_indices(
                 cursor[c] += take
                 parts_idx[i].append(sel)
 
-    used = np.concatenate([np.concatenate(p) for p in parts_idx if p], axis=0) if any(parts_idx) else np.array([], dtype=int)
-    remaining = df.index.difference(used).to_numpy()
+    used = (
+        np.concatenate([np.concatenate(p) for p in parts_idx if p], axis=0)
+        if any(parts_idx)
+        else np.array([], dtype=int)
+    )
+
+    remaining = np.array(df.index.difference(used).to_numpy(), copy=True)
     rng.shuffle(remaining)
 
     # completar tamanhos com remanescentes
